@@ -2,9 +2,13 @@
 
 // Made by INeatFreak
 // Asset Store: https://u3d.as/2W4H
+// GitHub: https://github.com/INeatFreak/unity-background-recompiler
 
 using System.IO;
+using System.Reflection;
+
 using UnityEngine;
+
 using UnityEditor;
 
 namespace Plugins.BackgroundRecompiler
@@ -12,49 +16,48 @@ namespace Plugins.BackgroundRecompiler
 	public static class BackgroundRecompiler
 	{
 		// constants
-        public const string Version = "1.0.0";
-		public const string AssetURL = "https://u3d.as/2W4H";
+        public const string Version = "1.0.1";
+		public const string AssetStoreURL = "https://u3d.as/2W4H";
+		public const string GitHubURL = "https://github.com/INeatFreak/unity-background-recompiler";
 
 		// variables
 		public static bool Enabled = true;
 		public static bool LogWhenBackgroundCompiled = true;
 		private static bool shouldRecompile = false;
 
+		private static FileSystemWatcher watcher;
+
+		private static MethodInfo CanReloadAssembliesMethod;
+		private static bool IsAssemblyLocked
+		{
+			get {
+				if (CanReloadAssembliesMethod == null) {
+					// get the method info for the CanReloadAssemblies method
+					// source: https://github.com/Unity-Technologies/UnityCsReference/blob/master/Editor/Mono/EditorApplication.bindings.cs#L154
+					CanReloadAssembliesMethod = typeof(EditorApplication).GetMethod("CanReloadAssemblies", BindingFlags.NonPublic | BindingFlags.Static);
+
+					if (CanReloadAssembliesMethod == null) {
+						Debug.LogError("Can't find CanReloadAssemblies method. It might have been renamed or removed.");
+					}
+				}
+
+				return !(bool)CanReloadAssembliesMethod.Invoke(null, null);
+			}
+		}
 
         // gets called when the editor is started and after the editor is recompile
         [InitializeOnLoadMethod]
 		private static void Initialize()
 		{
 			LoadPrefs();
-			
-			// watch for any file changes with the .cs extension
-			var watcher = new FileSystemWatcher(Application.dataPath, "*.cs")
-			{
-				NotifyFilter =
-					NotifyFilters.LastAccess	|
-					NotifyFilters.LastWrite		|
-					NotifyFilters.FileName		|
-					NotifyFilters.DirectoryName	,
-				IncludeSubdirectories = true	,
-				EnableRaisingEvents	= true		,
-			};
-			watcher.Changed += OnScriptFileChange;
-			watcher.Created += OnScriptFileChange;
-			watcher.Deleted += OnScriptFileChange;
-			watcher.Renamed += OnScriptFileChange;
 
-
-			// Log("Auto background compiler is active.");
-			
-			EditorApplication.update += OnUpdate;
-		}
-
-		private static void OnScriptFileChange(object sender, FileSystemEventArgs e) {
-			shouldRecompile = true;
+			SetActive(Enabled);
 		}
 
 		private static void OnUpdate()
 		{
+			// + TODO: check if assembly compiling is locked. Incase 'EditorApplication.LockReloadAssemblies();' is used.
+
 			if (Enabled == false) {
 				shouldRecompile = false; // to prevent recompile when changes are made while and enabled again
 				return;
@@ -64,9 +67,22 @@ namespace Plugins.BackgroundRecompiler
 			if (EditorApplication.isCompiling) return;
 			if (EditorApplication.isUpdating) return;
 
+			if (IsAssemblyLocked) {
+				if (LogWhenBackgroundCompiled) {
+					Log("Changes detected in background! But cannot recompile because the assembly compiling is locked.");
+				}
+				shouldRecompile = false;
+				return;
+			}
+
+			
 			if (LogWhenBackgroundCompiled) {
 				Log("Changes detected in background! Auto Recompiling...");
 			}
+
+
+			if (watcher != null)
+				watcher.Dispose();
 
 			// Calling Refresh will be enough for unity
 			//   to detect script changes and recompile
@@ -74,6 +90,61 @@ namespace Plugins.BackgroundRecompiler
 			AssetDatabase.Refresh();
 
 			shouldRecompile = false;
+		}
+
+
+		public static void SetActive(bool newState)
+		{
+			Enabled = newState;
+			
+			if (newState) {
+				// Enable
+
+				if (watcher != null)
+					watcher.Dispose();
+				
+				// watch for any file changes with the .cs extension
+				watcher = new FileSystemWatcher(Application.dataPath, "*.cs")
+				{
+					NotifyFilter =
+						NotifyFilters.LastAccess	|
+						NotifyFilters.LastWrite		|
+						NotifyFilters.FileName		|
+						NotifyFilters.DirectoryName	,
+					IncludeSubdirectories = true	,
+					EnableRaisingEvents	= true		,
+				};
+				watcher.Changed += OnScriptFileChange;
+				watcher.Created += OnScriptFileChange;
+				watcher.Deleted += OnScriptFileChange;
+				watcher.Renamed += OnScriptFileChange;
+
+				// unsubscribe when disposed
+				watcher.Disposed += (sender, args) => {
+					watcher.Changed -= OnScriptFileChange;
+					watcher.Created -= OnScriptFileChange;
+					watcher.Deleted -= OnScriptFileChange;
+					watcher.Renamed -= OnScriptFileChange;
+				};
+
+				// Log("Auto background compiler is enabled.");
+				
+				EditorApplication.update += OnUpdate;
+
+			} else {
+				// Disable
+
+				if (watcher != null)
+					watcher.Dispose();
+
+				// Log("Auto background compiler is disabled.");
+				
+				EditorApplication.update -= OnUpdate;
+			}
+		}
+		
+		private static void OnScriptFileChange(object sender, FileSystemEventArgs e) {
+			shouldRecompile = true;
 		}
 
 
@@ -137,9 +208,18 @@ namespace Plugins.BackgroundRecompiler
 					EditorGUIUtility.labelWidth += 100;
 					EditorGUILayout.BeginVertical();
 
+
 					// draw pref fields
-					BackgroundRecompiler.Enabled = EditorGUILayout.Toggle("Enabled", BackgroundRecompiler.Enabled);
+					var enabled = EditorGUILayout.Toggle("Enabled", BackgroundRecompiler.Enabled);
+					if (enabled != BackgroundRecompiler.Enabled) {
+						BackgroundRecompiler.SetActive(enabled);
+					}
+
+					GUILayout.Space(10);
+					
 					BackgroundRecompiler.LogWhenBackgroundCompiled = EditorGUILayout.Toggle("Log When Background Compiled", BackgroundRecompiler.LogWhenBackgroundCompiled);
+
+
 
 					EditorGUILayout.EndVertical();
 					EditorGUIUtility.labelWidth -= 100;
@@ -152,7 +232,7 @@ namespace Plugins.BackgroundRecompiler
 					GUILayout.FlexibleSpace();
 					string label = "Background Recompiler v" + BackgroundRecompiler.Version + " by INeatFreak";
 					if (GUILayout.Button(new GUIContent(label, "Click to open the Asset Store page!"), EditorStyles.miniLabel)) {
-						Application.OpenURL(AssetURL);
+						Application.OpenURL(AssetStoreURL);
 					}
 					GUILayout.FlexibleSpace();
 					GUILayout.EndHorizontal();
