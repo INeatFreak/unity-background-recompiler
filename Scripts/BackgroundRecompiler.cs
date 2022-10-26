@@ -6,6 +6,7 @@
 
 using System.IO;
 using System.Reflection;
+using System.Threading;
 
 using UnityEngine;
 
@@ -16,12 +17,13 @@ namespace Plugins.BackgroundRecompiler
 	public static class BackgroundRecompiler
 	{
 		// constants
-        public const string Version = "1.0.1";
+        public const string Version = "1.0.2";
 		public const string AssetStoreURL = "https://u3d.as/2W4H";
 		public const string GitHubURL = "https://github.com/INeatFreak/unity-background-recompiler";
 
 		// variables
 		public static bool Enabled = true;
+		public static bool DebugMode = false;
 		public static bool LogWhenBackgroundCompiled = true;
 		private static bool shouldRecompile = false;
 
@@ -37,7 +39,7 @@ namespace Plugins.BackgroundRecompiler
 					CanReloadAssembliesMethod = typeof(EditorApplication).GetMethod("CanReloadAssemblies", BindingFlags.NonPublic | BindingFlags.Static);
 
 					if (CanReloadAssembliesMethod == null) {
-						Debug.LogError("Can't find CanReloadAssemblies method. It might have been renamed or removed.");
+						Debug.LogError("Can't find CanReloadAssemblies method. It might have been renamed or removed."); 
 					}
 				}
 
@@ -56,33 +58,36 @@ namespace Plugins.BackgroundRecompiler
 
 		private static void OnUpdate()
 		{
-			// + TODO: check if assembly compiling is locked. Incase 'EditorApplication.LockReloadAssemblies();' is used.
+			//// + TODO: check if assembly compiling is locked. Incase 'EditorApplication.LockReloadAssemblies();' is used.
+
 
 			if (Enabled == false) {
 				shouldRecompile = false; // to prevent recompile when changes are made while and enabled again
 				return;
 			}
 
-			if (shouldRecompile == false) return;
-			if (EditorApplication.isCompiling) return;
-			if (EditorApplication.isUpdating) return;
-
 			if (IsAssemblyLocked) {
-				if (LogWhenBackgroundCompiled) {
-					Log("Changes detected in background! But cannot recompile because the assembly compiling is locked.");
-				}
+				Log("Changes detected in background! But cannot recompile because the assembly compiling is locked.");
 				shouldRecompile = false;
 				return;
 			}
 
+
+			if (shouldRecompile == false) return;
+			if (EditorApplication.isCompiling) return;
+			if (EditorApplication.isUpdating) return;
+
 			
+
+
+			// . Recompile
 			if (LogWhenBackgroundCompiled) {
 				Log("Changes detected in background! Auto Recompiling...");
 			}
 
-
-			if (watcher != null)
-				watcher.Dispose();
+			// disabled because it might not be needed
+			// if (watcher != null)
+			// 	watcher.Dispose();
 
 			// Calling Refresh will be enough for unity
 			//   to detect script changes and recompile
@@ -100,36 +105,55 @@ namespace Plugins.BackgroundRecompiler
 			if (newState) {
 				// Enable
 
+				var timer1 = System.Diagnostics.Stopwatch.StartNew();
+
 				if (watcher != null)
 					watcher.Dispose();
-				
-				// watch for any file changes with the .cs extension
-				watcher = new FileSystemWatcher(Application.dataPath, "*.cs")
-				{
-					NotifyFilter =
-						NotifyFilters.LastAccess	|
-						NotifyFilters.LastWrite		|
-						NotifyFilters.FileName		|
-						NotifyFilters.DirectoryName	,
-					IncludeSubdirectories = true	,
-					EnableRaisingEvents	= true		,
-				};
-				watcher.Changed += OnScriptFileChange;
-				watcher.Created += OnScriptFileChange;
-				watcher.Deleted += OnScriptFileChange;
-				watcher.Renamed += OnScriptFileChange;
 
-				// unsubscribe when disposed
-				watcher.Disposed += (sender, args) => {
-					watcher.Changed -= OnScriptFileChange;
-					watcher.Created -= OnScriptFileChange;
-					watcher.Deleted -= OnScriptFileChange;
-					watcher.Renamed -= OnScriptFileChange;
-				};
+				// create watcher in a seperate thread to prevent unity from freezing and increasing recompile times
+				var dataPath = Application.dataPath;
+				var thread = new Thread(
+					() => {
+						var timer2 = System.Diagnostics.Stopwatch.StartNew();
+						
+						// watch for any file changes with the .cs extension
+						watcher = new FileSystemWatcher(dataPath, "*.cs")
+						{
+							NotifyFilter =
+								NotifyFilters.LastAccess	|
+								NotifyFilters.LastWrite		|
+								NotifyFilters.FileName		|
+								NotifyFilters.DirectoryName	,
+							IncludeSubdirectories = true	,
+							EnableRaisingEvents	= true		,
+						};
+
+						watcher.Changed += OnScriptFileChange;
+						watcher.Created += OnScriptFileChange;
+						watcher.Deleted += OnScriptFileChange;
+						watcher.Renamed += OnScriptFileChange;
+
+						// unsubscribe when disposed
+						watcher.Disposed += (sender, args) => {
+							watcher.Changed -= OnScriptFileChange;
+							watcher.Created -= OnScriptFileChange;
+							watcher.Deleted -= OnScriptFileChange;
+							watcher.Renamed -= OnScriptFileChange;
+						};
+
+						timer2.Stop();
+						LogDebug("Watcher created in " + timer2.ElapsedMilliseconds + " ms using separate thread!");
+					}
+				);
+				thread.Start();
+
+
+				EditorApplication.update += OnUpdate;
 
 				// Log("Auto background compiler is enabled.");
-				
-				EditorApplication.update += OnUpdate;
+
+				timer1.Stop();
+				LogDebug("Initialized in " + timer1.ElapsedMilliseconds + " ms.");
 
 			} else {
 				// Disable
@@ -138,6 +162,8 @@ namespace Plugins.BackgroundRecompiler
 					watcher.Dispose();
 
 				// Log("Auto background compiler is disabled.");
+
+				LogDebug("Plugin disabled and disposed of watcher!");
 				
 				EditorApplication.update -= OnUpdate;
 			}
@@ -152,16 +178,19 @@ namespace Plugins.BackgroundRecompiler
 		#region Preferences
 			private const string PREFS_KEY = "BACKGROUND_RECOMPILER_";
 			private const string PREFS_KEY_ENABLED = PREFS_KEY + "ENABLED";
+			private const string PREFS_KEY_DEBUG_MODE = PREFS_KEY + "DEBUG_MODE";
 			private const string PREFS_KEY_LOG_COMPILES = PREFS_KEY + "LOG_COMPILES";
 
 			public static void SavePrefs()
 			{
 				EditorPrefs.SetBool(PREFS_KEY_ENABLED, Enabled);
+				EditorPrefs.SetBool(PREFS_KEY_DEBUG_MODE, DebugMode);
 				EditorPrefs.SetBool(PREFS_KEY_LOG_COMPILES, LogWhenBackgroundCompiled);
 			}
 			public static void LoadPrefs()
 			{
 				Enabled = EditorPrefs.GetBool(PREFS_KEY_ENABLED, Enabled);
+				DebugMode = EditorPrefs.GetBool(PREFS_KEY_DEBUG_MODE, DebugMode);
 				LogWhenBackgroundCompiled = EditorPrefs.GetBool(PREFS_KEY_LOG_COMPILES, LogWhenBackgroundCompiled);
 			}
 		#endregion Preferences
@@ -174,6 +203,11 @@ namespace Plugins.BackgroundRecompiler
 		private static void Log(string message)
 		{
 			UnityEngine.Debug.Log(LOG_PREFIX + message + LOG_POSTFIX);
+		}
+		private static void LogDebug(string message)
+		{
+			if (DebugMode)
+				UnityEngine.Debug.Log(LOG_PREFIX + "Debug - " + message);
 		}
 		private static void LogError(string message)
 		{
@@ -213,6 +247,10 @@ namespace Plugins.BackgroundRecompiler
 					var enabled = EditorGUILayout.Toggle("Enabled", BackgroundRecompiler.Enabled);
 					if (enabled != BackgroundRecompiler.Enabled) {
 						BackgroundRecompiler.SetActive(enabled);
+					}
+					var debugMode = EditorGUILayout.Toggle("Debug Mode", BackgroundRecompiler.DebugMode);
+					if (debugMode != BackgroundRecompiler.DebugMode) {
+						BackgroundRecompiler.DebugMode = debugMode;
 					}
 
 					GUILayout.Space(10);
@@ -261,6 +299,7 @@ namespace Plugins.BackgroundRecompiler
 			// Preferences Menu Item
 			private const string MENU_ITEM_PATH = "Plugins/Background Recompiler/";
 			private const string MENU_ITEM_ENABLED = MENU_ITEM_PATH + "Enabled";
+			private const string MENU_ITEM_DEBUG_MODE = MENU_ITEM_PATH + "Debug Mode";
 			private const string MENU_ITEM_LOG_COMPILES = MENU_ITEM_PATH + "Log Compiles";
 			
 			[MenuItem(MENU_ITEM_ENABLED)]
@@ -269,6 +308,14 @@ namespace Plugins.BackgroundRecompiler
 				SavePrefs();
 				
 				Menu.SetChecked(MENU_ITEM_ENABLED, Enabled);
+			}
+
+			[MenuItem(MENU_ITEM_DEBUG_MODE)]
+			private static void ToggleDebugMode() {
+				DebugMode = !DebugMode;
+				SavePrefs();
+				
+				Menu.SetChecked(MENU_ITEM_DEBUG_MODE, DebugMode);
 			}
 
 			[MenuItem(MENU_ITEM_LOG_COMPILES)]
@@ -295,7 +342,6 @@ namespace Plugins.BackgroundRecompiler
 				}
 			}
 		#endif
-
 	}
 }
 

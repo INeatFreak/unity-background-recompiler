@@ -2,7 +2,7 @@
     "name": "com.ineatfreak.background-recompiler",
     "displayName": "Background Recompiler",
     "description": "Auto recompiles the editor when saving the scripts. Without the need to ALT+TAB out of the code editor back into the unity to start recompiling.",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "unity": "2020.3",
     "keywords": [
         "tool",
