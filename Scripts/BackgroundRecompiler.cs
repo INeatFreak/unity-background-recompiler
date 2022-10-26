@@ -61,6 +61,11 @@ namespace Plugins.BackgroundRecompiler
 			//// + TODO: check if assembly compiling is locked. Incase 'EditorApplication.LockReloadAssemblies();' is used.
 
 
+			if (shouldRecompile == false) return;
+			if (EditorApplication.isCompiling) return;
+			if (EditorApplication.isUpdating) return;
+
+
 			if (Enabled == false) {
 				shouldRecompile = false; // to prevent recompile when changes are made while and enabled again
 				return;
@@ -71,13 +76,6 @@ namespace Plugins.BackgroundRecompiler
 				shouldRecompile = false;
 				return;
 			}
-
-
-			if (shouldRecompile == false) return;
-			if (EditorApplication.isCompiling) return;
-			if (EditorApplication.isUpdating) return;
-
-			
 
 
 			// . Recompile
